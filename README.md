@@ -1,53 +1,45 @@
-# GPU Ray Tracer (Metal)
+# GPU Ray Tracer
 
-A path tracer written in Metal compute shaders, ported from a CPU renderer I built from scratch. The goal wasn't just to make it run on the GPU, but to measure what changes and understand why.
+I built a ray tracer on the CPU first (following Peter Shirley's Realistic Ray Tracing book), then wanted to see if I could get it running on the GPU using Metal. This is that.
 
-![BVH render](bvh_render.png)
+![render](bvh_render.png)
 
-## What this is
+I honestly thought porting it would be mostly copy-paste. It wasn't. A bunch of stuff I did on the CPU just doesn't work on a GPU, and figuring out why was the whole point.
 
-I first built a full CPU path tracer following Peter Shirley's *Realistic Ray Tracing*, then ported the core to the GPU with Metal. Porting a ray tracer to the GPU isn't a copy-paste job. Three things had to change, and each is a real GPU constraint:
+## Things I had to change
 
-**Recursion became a loop.** The CPU tracer called itself to follow bounces. GPUs have no real call stack, so the recursive trace was rewritten as an iterative loop that carries a running throughput value forward.
+**Recursion doesn't work.** My CPU version had a function that called itself every time a ray bounced. GPUs can't really do that, so I had to rewrite it as a loop that keeps track of the color as it goes instead of relying on the function stack.
 
-**Objects became flat data.** The CPU scene was a tree of objects with virtual functions and pointers. None of that exists on the GPU. Spheres and BVH nodes became flat structs, and the BVH tree was flattened into an array where children are indices, not pointers.
+**No classes or pointers.** On the CPU my scene was a bunch of objects with inheritance. The GPU only wants plain data, so everything became flat structs, and my BVH tree had to be flattened into an array where each node stores index numbers instead of pointers.
 
-**Randomness became per-thread.** No std::mt19937 on the GPU. Each thread seeds its own hash-based RNG from its pixel coordinates, so thousands of threads get independent random streams.
+**Random numbers are different.** No std::mt19937. Each GPU thread makes its own random numbers from its pixel position, otherwise every pixel bounces the exact same way and the image looks broken.
 
-## Measurements
+## What I measured
 
-All on an Apple M2 Pro.
+All on an Apple M2 Pro, same scene both ways.
 
-GPU vs 12-thread CPU (identical 5-sphere scene, 800x450, 200 spp, 30 bounces):
+GPU vs my CPU version (12 threads):
+- CPU: 652 ms
+- GPU: 63 ms
+- about 10x faster
 
-| | Time |
-|---|---|
-| CPU (12 threads) | 652 ms |
-| GPU | 63 ms |
-| Speedup | 10.4x |
+BVH vs brute force on the GPU:
+- Brute force: 2174 ms
+- BVH: 302 ms
+- about 7x faster
 
-BVH vs brute force on the GPU (488 spheres, 800x450, 100 spp):
+## The thing I thought was cool
 
-| | Time |
-|---|---|
-| Brute force | 2174 ms |
-| BVH | 302 ms |
-| Speedup | 7.2x |
+My BVH gave about 15x speedup on the CPU but only 7x on the GPU. Same code basically. I read up on why, and it's because of something called warp divergence: GPU threads run in groups that all do the same thing at once, but rays going through the BVH take different paths, so the GPU ends up doing extra work. Apparently this is exactly why newer GPUs have special ray tracing hardware built in. Learning that was probably my favorite part.
 
-## The interesting finding
+## A bug that took me a while
 
-The BVH gave roughly 15x on the CPU but only 7.2x on the GPU for the same algorithm. The reason is warp divergence: GPU threads run in lockstep groups, but neighboring rays take different paths through the BVH tree, so the hardware runs both branches and masks off the wrong results. The acceleration structure that helps the CPU partially fights the GPU's execution model.
+My first GPU render was just a blank sky, no error message at all. Turns out a float3 is 16 bytes on the GPU but 12 on the CPU, so my structs didn't line up and the GPU was reading garbage for where my spheres were. Switching to float4 fixed it. Wild that it didn't crash, it just drew the wrong thing.
 
-This is exactly why modern GPUs ship dedicated ray-tracing hardware (RT cores) whose job is to traverse BVHs without paying the divergence penalty.
+## Running it
 
-## A bug worth mentioning
-
-My first GPU render came out blank, with no error. The cause was struct alignment: a float3 is 16 bytes on the GPU, not 12, so my CPU and GPU structs disagreed on layout and the GPU read garbage for the sphere positions. Switching to float4 packing fixed it. GPU code fails silently, so this kind of thing produces a wrong image rather than a crash.
-
-## Building
-
-Requires macOS with the Metal toolchain. Download Apple's metal-cpp into this folder, then:
+macOS with the Metal toolchain. You need Apple's metal-cpp in the folder, then:
 
     ./build.sh && ./raytracer
 
-cpu_bench.cpp is the CPU baseline used for the comparison.
+cpu_bench.cpp is the CPU version I compared against.
