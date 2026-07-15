@@ -1,0 +1,10 @@
+metal-cpp/
+metal-cpp.zip
+*.air
+*.metallib
+*.ppm
+raytracer
+cpu_bench
+gpu_gradient
+gpu_spheres
+.DS_Store
